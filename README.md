@@ -19,12 +19,12 @@ Official code for [Paper](https://arxiv.org/abs/2409.01935)
 ## <a name="performance"></a>:eyes:Compression Performance
 ### Quantitative Comparisons
 <p align="center">
-    <img src="assets/metrics.png">
+    <img src="assets/visual_results/metrics.png">
 </p>
 
 ### Qualitative Comparisons
 <p align="center">
-    <img src="assets/visual_examples.png">
+    <img src="assets/visual_results/images.png">
 </p>
 
 ## <a name="installation"></a>:gear:Installation
