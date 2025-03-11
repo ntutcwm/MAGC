@@ -2,8 +2,8 @@ dataset:
   target: dataset.codeformer_rs_train.CodeformerDataset
   params:
     # Path to the file list.
-    file_list: ../dataset/Synthetic-v18-45k/train/train_hr.txt
-    file_list_dlg: ../dataset/Synthetic-v18-45k/train/train_ref.txt
+    file_list: /mnt/massive/wangce/SGDM/dataset/Synthetic-v18-45k/train/train_hr.txt
+    file_list_dlg: /mnt/massive/wangce/SGDM/dataset/Synthetic-v18-45k/train/train_ref.txt
     
     out_size: 256
     crop_type: none

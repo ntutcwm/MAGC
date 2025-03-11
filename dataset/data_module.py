@@ -10,6 +10,7 @@ from dataset.batch_transform import BatchTransform, IdentityBatchTransform
 
 
 class BIRDataModule(pl.LightningDataModule):
+    
     def __init__(
         self,
         train_config: str,
