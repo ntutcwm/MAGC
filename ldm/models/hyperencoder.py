@@ -1,44 +1,113 @@
 import torch
 import torch.nn as nn
+
 from compressai.entropy_models import EntropyBottleneck, GaussianConditional
+from compressai.models.utils import conv
 from compressai.ops import ste_round
+from compressai.layers import conv3x3, conv1x1
 from compressai.models.base import CompressionModel
+
 from compressai.ans import BufferedRansEncoder, RansDecoder
+
 from ldm.spade.architecture import SPADEResnetBlock 
+# from ldm.spade.normalization import SPADE
 
 
-from model.layers import conv3x3, myResnetBlock, myDownsample, myUpsample, LayerNorm, myBlock
+
+class LayerNorm(nn.Module):
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(1, dim, 1, 1))
+        self.b = nn.Parameter(torch.zeros(1, dim, 1, 1))
+
+    def forward(self, x):
+        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
+        mean = torch.mean(x, dim=1, keepdim=True)
+        return (x - mean) / (var + self.eps).sqrt() * self.g + self.b
+
+class myBlock(nn.Module):
+    def __init__(self, dim, dim_out, large_filter=False):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(dim, dim_out, 5 if large_filter else 3, padding=2 if large_filter else 1), LayerNorm(dim_out), nn.LeakyReLU()
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+class myResnetBlock(nn.Module):
+    def __init__(self, dim, dim_out, time_emb_dim=None, large_filter=False):
+        super().__init__()
+
+        self.block1 = myBlock(dim, dim_out, large_filter)
+        self.block2 = myBlock(dim_out, dim_out)
+        self.res_conv = nn.Conv2d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
+
+    def forward(self, x):
+        h = self.block1(x)
+        h = self.block2(h)
+        return h + self.res_conv(x)
+
+
+class myDownsample(nn.Module):
+    def __init__(self, dim_in, dim_out=None):
+        super().__init__()
+        if dim_out is None:
+            dim_out = dim_in
+        self.conv = nn.Conv2d(dim_in, dim_out, 3, 2, 1)
+
+    def forward(self, x):
+        return self.conv(x)
+    
+
+class myUpsample(nn.Module):
+    def __init__(self, dim_in, upscale_factor=2):
+        super().__init__()
+
+        self.pix_shuffle = nn.Sequential(
+            conv1x1(dim_in, dim_in * upscale_factor * upscale_factor),
+            nn.PixelShuffle(upscale_factor)
+        )
+
+    def forward(self, x):
+        return self.pix_shuffle(x)
+
+
 
 
 class HyperEncoder(CompressionModel):
-    def __init__(self, N=128, **kwargs):
+    def __init__(self, N=128, encoder_use_spade=True, decoder_use_spade=True, **kwargs):
         super().__init__(**kwargs)
-        self.upscale_factor = 4 
-        self.hy_out_dim = 64 
+        self.upscale_factor = 4 # 上采样倍数
+        self.hy_out_dim = 64 # M
         self.num_slices = 8
         self.channel_per_slice = int(self.hy_out_dim / self.num_slices)
-        self.max_support_slices = -1 
-        # self.use_spade = False
-        self.use_spade = True
+        self.max_support_slices = -1 # 表示没有数量限制
+
+        self.encoder_use_spade = encoder_use_spade
+        self.decoder_use_spade = decoder_use_spade
+        if not self.decoder_use_spade: # 解码端如果不用map，编码端也不用
+            self.encoder_use_spade = False
 
         self.ga_1 =  nn.Sequential(
-            conv3x3(4, N),    
+            conv3x3(4, N),    # 128 32 32
             myResnetBlock(N, N),
             myResnetBlock(N, N),
         )        
         self.ga_2 =  nn.Sequential(
-            myDownsample(N),        
+            myDownsample(N),        # 128 16 16
             myResnetBlock(N, N),
             myResnetBlock(N, N),
         )
         self.ga_3 =  nn.Sequential(
-            myDownsample(N),        
+            myDownsample(N),        # 128 8 8
             myResnetBlock(N, N),
             myResnetBlock(N, N),
         )
         self.ga_4 =  conv3x3(N, self.hy_out_dim)
         
-        if self.use_spade:
+        if self.encoder_use_spade:
             self.ga_sem1 =  SPADEResnetBlock(N, N)
             self.ga_sem2 =  SPADEResnetBlock(N, N)
             self.ga_sem3 =  SPADEResnetBlock(N, N)
@@ -46,6 +115,7 @@ class HyperEncoder(CompressionModel):
             self.ga_sem1 =  myResnetBlock(N, N)
             self.ga_sem2 =  myResnetBlock(N, N)
             self.ga_sem3 =  myResnetBlock(N, N)
+
 
         self.gs_1 =  nn.Sequential(
             conv3x3(self.hy_out_dim, N),
@@ -63,7 +133,8 @@ class HyperEncoder(CompressionModel):
             myResnetBlock(N, N),
         )
         self.gs_4 =  conv3x3(N, 4)
-        if self.use_spade:
+
+        if self.decoder_use_spade:
             self.gs_sem1 =  SPADEResnetBlock(N, N)
             self.gs_sem2 =  SPADEResnetBlock(N, N)
             self.gs_sem3 =  SPADEResnetBlock(N, N)
@@ -71,8 +142,6 @@ class HyperEncoder(CompressionModel):
             self.gs_sem1 =  myResnetBlock(N, N)
             self.gs_sem2 =  myResnetBlock(N, N)
             self.gs_sem3 =  myResnetBlock(N, N)
-
-
 
         self.ha_1 = nn.Sequential(
             conv3x3(self.hy_out_dim, N),
@@ -82,7 +151,6 @@ class HyperEncoder(CompressionModel):
             conv3x3(N,self.hy_out_dim)
         )
 
-   
         self.hs_1 = nn.Sequential(
             conv3x3(self.hy_out_dim, N),
             myResnetBlock(N, N),
@@ -92,23 +160,23 @@ class HyperEncoder(CompressionModel):
         )
 
 
-        self.entropy_bottleneck = EntropyBottleneck(self.hy_out_dim)
+        self.entropy_bottleneck = EntropyBottleneck(self.hy_out_dim) # Hyper的维度
         self.gaussian_conditional = GaussianConditional(None)
 
-        self.sem_encoder =  nn.Sequential( 
+        self.sem_encoder =  nn.Sequential( # 3 256 256
             nn.Conv2d(3, 64, kernel_size=5, stride=1, padding=2),
             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.Conv2d(128, 192, kernel_size=3, stride=2, padding=1),
             nn.Conv2d(192, 192, kernel_size=3, stride=2, padding=1),
         )   
 
-        self.sem_conv1 = nn.Sequential(
+        self.sem_conv1 = nn.Sequential( # 3 256 256
             conv3x3(192,192,2),
             LayerNorm(192),
             nn.LeakyReLU()
         )   
 
-        self.sem_conv2 = nn.Sequential(
+        self.sem_conv2 = nn.Sequential( # 3 256 256
             conv3x3(192,192,2),
             LayerNorm(192),
             nn.LeakyReLU()
@@ -117,29 +185,29 @@ class HyperEncoder(CompressionModel):
 
         self.cc_mean_transforms = nn.ModuleList(
             nn.Sequential(
-                conv3x3(self.hy_out_dim + self.channel_per_slice * i, 128, 1), 
+                conv(self.hy_out_dim + self.channel_per_slice * i, 128, stride=1, kernel_size=3), # size都是8，8， channel 从  64（hyper） + 8 * i (channel-wise self regression)到8
                 nn.GELU(),  
-                conv3x3(128, 64, 1),
+                conv(128, 64, stride=1, kernel_size=3),
                 nn.GELU(),
-                conv3x3(64, 32, 1),
+                conv(64, 32, stride=1, kernel_size=3),
                 nn.GELU(),
-                conv3x3(32, 16, 1),
+                conv(32, 16, stride=1, kernel_size=3),
                 nn.GELU(),
-                conv3x3(16, self.channel_per_slice, 1),
+                conv(16, self.channel_per_slice, stride=1, kernel_size=3),
             ) for i in range(self.num_slices)
         )
 
         self.cc_scale_transforms = nn.ModuleList(
             nn.Sequential(
-                conv3x3(self.hy_out_dim + self.channel_per_slice * i, 128, 1), 
+                conv(self.hy_out_dim + 8 * i, 128, stride=1, kernel_size=3), # size都是8，8， channel 从  64（hyper） + 8 * i (channel-wise self regression)到8
                 nn.GELU(),  
-                conv3x3(128, 64, 1),
+                conv(128, 64, stride=1, kernel_size=3),
                 nn.GELU(),
-                conv3x3(64, 32, 1),
+                conv(64, 32, stride=1, kernel_size=3),
                 nn.GELU(),
-                conv3x3(32, 16, 1),
+                conv(32, 16, stride=1, kernel_size=3),
                 nn.GELU(),
-                conv3x3(16, self.channel_per_slice, 1),
+                conv(16, 8, stride=1, kernel_size=3),
             ) for i in range(8)
         )
 
@@ -174,7 +242,7 @@ class HyperEncoder(CompressionModel):
         y = self.gs_sem3(y, sem[0])
         y = self.gs_4(y)
         return y
-    
+
     def gs_without_sem(self,y):
         y = self.gs_1(y)
         y = self.gs_sem1(y)
@@ -205,10 +273,9 @@ class HyperEncoder(CompressionModel):
 
 
 
-    def forward(self, x, sem):
-        # encoding
-        if sem is not None:
-            sem_latents = self.get_sem_latent(sem) # b 192 32 32
+    def forward(self, x, sem):  # 用于训练
+        sem_latents = self.get_sem_latent(sem) # b 192 32 32
+        if self.encoder_use_spade:
             y = self.ga(x, sem_latents)
         else:
             y = self.ga_without_sem(x)
@@ -247,20 +314,18 @@ class HyperEncoder(CompressionModel):
 
             y_hat_slices.append(y_hat_slice)
 
-
-        # decoding
         y_hat = torch.cat(y_hat_slices, dim=1)
         y_likelihoods = torch.cat(y_likelihood, dim=1)
 
-        if sem is not None:
-            x_hat = self.gs(y_hat, sem_latents) 
+        if self.decoder_use_spade:
+            x_hat = self.gs(y_hat, sem_latents)
         else:
-            x_hat = self.gs_without_sem(y_hat) 
-            
+            x_hat = self.gs_without_sem(y_hat)
+
         return {
             'y_hat': x_hat,
             # 'y_hat': x,
-            "likelihoods": [y_likelihoods, z_likelihoods], # calculating bpp_loss
+            "likelihoods": [y_likelihoods, z_likelihoods], # 用于计算bpp_loss
         }
     
 
@@ -270,19 +335,18 @@ class HyperEncoder(CompressionModel):
 
         
     
-    def hyper_compress(self,x,sem): 
+    def hyper_compress(self,x,sem):  # 用于验证
         batch_size = x.size(0)
-
-
-        # encoding
-        if sem is not None:
-            sem_latents = self.get_sem_latent(sem) 
+        sem_latents = self.get_sem_latent(sem) 
+        if self.encoder_use_spade:
+            # 编码 , y-> h_hat, y_string同时发生，所以不需要经过两便for循环
             y = self.ga(x, sem_latents)
         else:
             y = self.ga_without_sem(x)
 
 
         y_shape = y.shape[2:]
+
         z = self.ha(y)
         z_strings = self.entropy_bottleneck.compress(z)
         z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
@@ -300,10 +364,15 @@ class HyperEncoder(CompressionModel):
         offsets = self.gaussian_conditional.offset.reshape(-1).int().tolist()
 
         encoder = BufferedRansEncoder()
+        symbols_list = []
+        indexes_list = []
         y_strings = []
+
+
+
         symbols_list_single = []
         indexes_list_single = []
-
+        y_strings_single = []
 
         for i in range(batch_size):
             symbols_list_single.append([])
@@ -328,6 +397,9 @@ class HyperEncoder(CompressionModel):
             for i in range(batch_size):
                 symbols_list_single[i].extend(y_q_slice[i,:,:,:].reshape(-1).tolist())
                 indexes_list_single[i].extend(index[i,:,:,:].reshape(-1).tolist())
+            
+            # symbols_list.extend(y_q_slice.reshape(-1).tolist())
+            # indexes_list.extend(index.reshape(-1).tolist())
 
 
             y_hat_slices.append(y_hat_slice)
@@ -340,18 +412,25 @@ class HyperEncoder(CompressionModel):
             y_string = encoder.flush()
             y_strings.append(y_string)
 
-        # decoding
+        # encoder.encode_with_indexes(symbols_list, indexes_list, cdf, cdf_lengths, offsets)
+        # y_string = encoder.flush()
+        # y_strings.append(y_string)
+
+
+
+        # 解码
         y_hat = torch.cat(y_hat_slices, dim=1)
-        if sem is not None:
-            x_hat = self.gs(y_hat, sem_latents) 
+        if self.decoder_use_spade:
+            x_hat = self.gs(y_hat, sem_latents)
         else:
-            x_hat = self.gs_without_sem(y_hat) 
+            x_hat = self.gs_without_sem(y_hat)
+
 
 
         return {
             'y_hat': x_hat,
             # 'y_hat': x,
-            'z_strings':[y_strings, z_strings], 
+            'z_strings':[y_strings, z_strings], # y_strings应该是一个列表
         }
         
 

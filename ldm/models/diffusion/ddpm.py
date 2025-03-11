@@ -28,6 +28,9 @@ from ldm.models.autoencoder import IdentityFirstStage, AutoencoderKL
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
 from model.mixins import ImageLoggerMixin
+from ldm.models.hyperencoder import HyperEncoder
+
+
 
 import math
 
@@ -93,7 +96,7 @@ class DDPM(pl.LightningModule, ImageLoggerMixin):
         self.channels = channels
         self.use_positional_encodings = use_positional_encodings
         self.model = DiffusionWrapper(unet_config, conditioning_key)
-        self.lamda = 0.10  # {0.10, 0.20, 0.39, 0.67, 0.91, 1.25} 
+        self.lamda = 0.2 # 0.1 0.2 0.39 0.67 0.91 1.25
 
 
 
@@ -803,7 +806,7 @@ class LatentDiffusion(DDPM):
                 cond_key = self.cond_stage_key
             if cond_key != self.first_stage_key:
                 if cond_key in ['caption', 'coordinates_bbox', "txt"]:
-                    xc = batch[cond_key]
+                    xc = batch[cond_key] # txt 设为空
                 elif cond_key in ['class_label', 'cls']:
                     xc = batch
                 else:
@@ -812,7 +815,7 @@ class LatentDiffusion(DDPM):
                 xc = x
             if not self.cond_stage_trainable or force_c_encode:
                 if isinstance(xc, dict) or isinstance(xc, list):
-                    c = self.get_learned_conditioning(xc) # b 77 1024 
+                    c = self.get_learned_conditioning(xc) # b 77 1024 送入clip模型
                 else:
                     c = self.get_learned_conditioning(xc.to(self.device))
             else:
@@ -831,7 +834,7 @@ class LatentDiffusion(DDPM):
             if self.use_positional_encodings:
                 pos_x, pos_y = self.compute_latent_shifts(batch)
                 c = {'pos_x': pos_x, 'pos_y': pos_y}
-        out = [z, c] # latent, text_embedding
+        out = [z, c] # img_gt对应的latent, txt的embedding
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z)
             out.extend([x, xrec])
@@ -850,7 +853,7 @@ class LatentDiffusion(DDPM):
             z = rearrange(z, 'b h w c -> b c h w').contiguous()
 
         z = 1. / self.scale_factor * z  
-        return self.first_stage_model.decode(z) 
+        return self.first_stage_model.decode(z) # 输出的是原图
     
     # 2023-04-08
     def decode_first_stage_with_grad(self, z, predict_cids=False, force_not_quantize=False):
@@ -869,7 +872,7 @@ class LatentDiffusion(DDPM):
 
     def shared_step(self, batch, **kwargs): # batch['ref_gt'], batch['img_gt']
         x, c = self.get_input(batch, self.first_stage_key) # x：b 4 32 32 ;  c['c_crossattn'][0]: b 77 1024 ; c['c_ref'][0]:b 3 256 256
-        loss = self(x, c, batch) 
+        loss = self(x, c, batch) # 是一个列表， loss[0]是最终loss
         return loss
 
     def forward(self, x, c, batch, *args, **kwargs):
@@ -882,8 +885,9 @@ class LatentDiffusion(DDPM):
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
 
-        if self.training_stage1:
+        if self.training_stage1: # 第一阶段
             return self.stage1(x, batch)
+        
         return self.p_losses(x, c, t, *args, **kwargs)
 
     def apply_model(self, x_noisy, t, cond , return_ids=False):
@@ -922,6 +926,9 @@ class LatentDiffusion(DDPM):
         return mean_flat(kl_prior) / np.log(2.0)
 
 
+
+
+
     def cal_bpp_loss(self, likelihoods, img):
         N, _, _, _ = img.size()
         num_pixels = N * 256 * 256
@@ -929,9 +936,20 @@ class LatentDiffusion(DDPM):
             (torch.log(likelihood).sum() / (-math.log(2) * num_pixels))
             for likelihood in likelihoods
         )
+        # bpp_loss = torch.log(likelihoods).sum() / (-math.log(2) * num_pixels)
+        
         return bpp_loss
     
     def cal_bpp(self, z_strings, img):
+        # # N, _, H, W = img.size()
+        # # num_pixels = N * H * W
+        # # bpp = 0
+        # # for single_img_strings in z_strings:
+        # #     bpp += len(single_img_strings)
+
+        # # bpp = bpp * 8.0 / num_pixels
+        # # return bpp
+
         N, _, H, W = img.size()
         num_pixels = 1 * H * W
         bpp_list = []
@@ -944,18 +962,38 @@ class LatentDiffusion(DDPM):
             bpp_list.append((len(z[i])+len(zz[i])) * 8.0 / num_pixels)
             bpp_list_z.append(len(z[i]) * 8.0 / num_pixels)
             bpp_list_zz.append(len(zz[i]) * 8.0 / num_pixels)
+
+        # for single_img_strings in z_strings:
+        #     bpp_list.append(len(single_img_strings) * 8.0 / num_pixels)
+            
+        # bpp = sum(bpp_list)/len(bpp_list)
+
+
         return bpp_list, bpp_list_z, bpp_list_zz
+
+
+
+
+
+
+
+
+
+
 
     def p_losses(self, x_start, cond, t, noise=None): # 训练时调用, cond['c_crossattn'], cond['c_ref']
         # 计算hyper
-        ref_pixel = cond['c_ref'][0]
-        if self.use_spade:
-            hyper = self.hyper_encoder(x_start, ref_pixel)  
-        else:
-            hyper = self.hyper_encoder(x_start, None)  
+        ref_pixel = cond['c_ref'][0]  
+        hyper = self.hyper_encoder(x_start, ref_pixel)  
 
         y_hat, likelihoods = hyper['y_hat'], hyper['likelihoods']
+
+
         # hyper['y_hat'] -> y0, x_start->y
+
+
+
+
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         model_output = self.apply_model(x_noisy, t, cond, y_hat) # 前向过程预测出的噪声 b 4 32 32 
@@ -979,18 +1017,18 @@ class LatentDiffusion(DDPM):
 
         logvar_t = self.logvar[t].to(self.device) # 0
         loss = loss_simple / torch.exp(logvar_t) + logvar_t
-        # loss = loss_simple / torch.exp(self.logvar) + self.logvar
+
         if self.learn_logvar:
             loss_dict.update({f'{prefix}/loss_gamma': loss.mean()})
             loss_dict.update({'logvar': self.logvar.data.mean()})
 
         if self.training_stage2:
             loss = self.l_simple_weight * loss.mean()
-        
+
 
 
         loss_vlb = self.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
-        loss_vlb = (self.lvlb_weights[t] * loss_vlb).mean() 
+        loss_vlb = (self.lvlb_weights[t] * loss_vlb).mean() # 没用上
         loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
         loss += (self.original_elbo_weight * loss_vlb) 
         loss_dict.update({f'{prefix}/loss': loss})
@@ -998,26 +1036,26 @@ class LatentDiffusion(DDPM):
         return loss, loss_dict
 
 
-    def stage1(self, x_start, batch): 
+    def stage1(self, x_start, batch): # 训练时调用   batch['ref_gt']   batch['img_gt']
         x = batch['img_gt'] #  16 3 256 256 ; -1 1 
         y = x_start # b 4 32 32
 
-        if self.use_spade:
-            hyper = self.hyper_encoder(y, batch['ref_gt'])  
-        else:
-            hyper = self.hyper_encoder(y, None)  
-
-
-        
+        hyper = self.hyper_encoder(y, batch['ref_gt'])  
         y_hat, likelihoods = hyper['y_hat'], hyper['likelihoods']
-
-        x_hat = self.decode_first_stage(y_hat) # -1,1
-        x_mse = torch.nn.functional.mse_loss(x, x_hat)
         y_mse = torch.nn.functional.mse_loss(y, y_hat)
 
         bpp_loss = self.cal_bpp_loss(likelihoods, y)
-        loss =  self.lamda * y_mse + bpp_loss 
 
+
+        # 0.1 0.2 0.39 0.67 0.91 1.25
+        # loss =  0.10 * y_mse + bpp_loss
+        # loss =  0.20 * y_mse + bpp_loss
+        # loss =  0.39 * y_mse + bpp_loss
+        # loss =  0.67 * y_mse + bpp_loss
+        # loss =  0.91 * y_mse + bpp_loss
+        # loss =  1.25 * y_mse + bpp_loss
+
+        loss =  self.lamda * y_mse + bpp_loss
 
 
         loss_dict = {}
