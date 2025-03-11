@@ -12,23 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-
-from torch import Tensor
-
-
-def ste_round(x: Tensor) -> Tensor:
-    """
-    Rounding with non-zero gradients. Gradients are approximated by replacing
-    the derivative by the identity function.
-
-    Used in `"Lossy Image Compression with Compressive Autoencoders"
-    <https://arxiv.org/abs/1703.00395>`_
-
-    .. note::
-
-        Implemented with the pytorch `detach()` reparametrization trick:
-
-        `x_round = x_round - x.detach() + x`
-    """
-    return torch.round(x) - x.detach() + x
+from .gdn import *
+from .layers import *
+from .win_attention import *
