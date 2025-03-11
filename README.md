@@ -1,6 +1,6 @@
-## MAGC: Map-Assisted Remote-Sensing Image Compression at Extremely Low Bitrates
+## MAGC (ISPRS-JPRS 2025)
 
-Official code for [Paper](https://arxiv.org/abs/2409.01935) 
+Official code for [Map-Assisted Remote-Sensing Image Compression at Extremely Low Bitrates](https://arxiv.org/abs/2409.01935) 
 
 <p align="center">
     <img src="assets/architecture.png">
