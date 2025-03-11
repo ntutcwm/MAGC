@@ -321,6 +321,9 @@ class SpacedSampler:
                     delta_pred_x0 = pred_x0.grad
                     # update prex_x0
                     pred_x0 += delta_pred_x0
+                    # our classifier guidance is equivalent to multiply delta_pred_x0
+                    # by a constant and then add it to model_mean, We set the constant
+                    # to 0.5
                     model_mean += 0.5 * delta_pred_x0
                     pred_x0.grad.zero_()
                 else:
@@ -526,7 +529,7 @@ class SpacedSampler:
             "c_ref": [cond_img if cond_img is not None else None],
             "c_crossattn": [self.model.get_learned_conditioning([positive_prompt] * b)]
         }
-        uncond = { 
+        uncond = { # 这里可能不是太需要
             "c_ref": [None],
             "c_crossattn": [self.model.get_learned_conditioning([negative_prompt] * b)]
         }

@@ -46,6 +46,14 @@ class ImageLogger(Callback):
         batch: Any, batch_idx: int, dataloader_idx: int
     ) -> None:
         
+    
+        # torch.cuda.empty_cache() # 没用
+
+
+        # 在每次迭代之后，要检测是否要log
+        # 如果要log
+        
+
         if pl_module.global_step % self.log_every_n_steps == 0:
             is_train = pl_module.training
             if is_train:

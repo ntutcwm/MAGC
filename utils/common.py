@@ -36,7 +36,7 @@ def load_state_dict(model: nn.Module, state_dict: Mapping[str, Any], strict: boo
     state_dict = state_dict.get("state_dict", state_dict)
 
 
-    # factorize
+    # 熵模型用了factorize
     if state_dict['hyper_encoder.entropy_bottleneck._offset'].size() != torch.Size([0]):
         state_dict['hyper_encoder.entropy_bottleneck._offset'] = torch.tensor([], dtype=torch.int32)
     if state_dict['hyper_encoder.entropy_bottleneck._quantized_cdf'].size() != torch.Size([0]):
@@ -44,7 +44,7 @@ def load_state_dict(model: nn.Module, state_dict: Mapping[str, Any], strict: boo
     if state_dict['hyper_encoder.entropy_bottleneck._cdf_length'].size() != torch.Size([0]):
         state_dict['hyper_encoder.entropy_bottleneck._cdf_length'] = torch.tensor([], dtype=torch.int32)
 
-    # SGM
+    # 熵模型用了高斯分布
     if state_dict['hyper_encoder.gaussian_conditional._offset'].size() != torch.Size([0]):
         state_dict['hyper_encoder.gaussian_conditional._offset'] = torch.tensor([], dtype=torch.int32)
     if state_dict['hyper_encoder.gaussian_conditional._quantized_cdf'].size() != torch.Size([0]):
@@ -71,7 +71,27 @@ def load_state_dict(model: nn.Module, state_dict: Mapping[str, Any], strict: boo
         state_dict = {key[len("module."):]: value for key, value in state_dict.items()}
         
     # 320 4 3 3 -> 320 8 3 3 
+
+    # copied_tensor = state_dict['model.diffusion_model.input_blocks.0.0.weight'].clone()
+    # state_dict['model.diffusion_model.input_blocks.0.0.weight'] = torch.cat((state_dict['model.diffusion_model.input_blocks.0.0.weight'], copied_tensor),dim=1)
+
     state_dict['model.diffusion_model.input_blocks.0.0.weight'] = state_dict['model.diffusion_model.input_blocks.0.0.weight'][:,:8,:,:]
+
+
+
+
+    # # 将原始权重复制到新模型，除了最后一个myResnetBlock
+    # modified_model_state_dict = model.state_dict()
+    # # 手动更新state_dict，跳过最后一个myResnetBlock
+    # for key in state_dict:
+    #     if key not in modified_model_state_dict:
+    #         print(key)
+    #         continue  # 跳过最后一个myResnetBlock的权重
+    #     modified_model_state_dict[key] = state_dict[key]
+    # # 保存新权重
+    # torch.save(modified_model_state_dict, 'test.ckpt')
+
+
 
     model.load_state_dict(state_dict, strict=strict)
 

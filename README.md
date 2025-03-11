@@ -19,12 +19,12 @@ Official code for [Paper](https://arxiv.org/abs/2409.01935)
 ## <a name="performance"></a>:eyes:Compression Performance
 ### Quantitative Comparisons
 <p align="center">
-    <img src="assets/visual_results/metrics.png">
+    <img src="assets/metrics.png">
 </p>
 
 ### Qualitative Comparisons
 <p align="center">
-    <img src="assets/visual_results/images.png">
+    <img src="assets/visual_examples.png">
 </p>
 
 ## <a name="installation"></a>:gear:Installation
@@ -52,7 +52,7 @@ Please access the training set and test set from [SGDM](https://github.com/wwang
 ```shell
 CUDA_VISIBLE_DEVICES=0 python inference.py \
 --ckpt magc_ckpts/ckpts_stage2/v40_step=120999-lpips=0.3132.ckpt \
---config configs/model/cldm.yaml \
+--config configs/model/cldm_stage2.yaml \
 --input_path ../dataset/Synthetic-v18-45k/test_4500 \
 --steps 50 \
 --batchsize 30 \
@@ -61,7 +61,30 @@ CUDA_VISIBLE_DEVICES=0 python inference.py \
 ```
 
 ## <a name="train"></a>:stars:Train
-TBD
+For the first stage, you can loat the pretrained parameters:
+```shell
+python scripts/make_stage1_init_weight.py \
+--cldm_config configs/model/cldm_stage2.yaml \
+--sd_weight pretrained/v2-1_512-ema-pruned.ckpt \
+--output pretrained/init_stage1.ckpt
+```
+Then you can start the first training stage:
+```shell
+python train.py \
+--config configs/train_cldm_stage1.yaml
+```
+For the second stage, you can loat the parameters obtained in the first stage:
+```shell
+python scripts/make_stage2_init_weight.py \
+--cldm_config configs/model/cldm_stage2.yaml \
+--sd_weight magc_ckpts/ckpts_stage1/v38_step=115999-val_loss=0.2284.ckpt \
+--output pretrained/init_stage2.ckpt
+```
+Finally you can start training:
+```shell
+python train.py \
+--config configs/train_cldm_stage2.yaml
+```
 
 
 ## Citation
