@@ -406,10 +406,21 @@ class ControlLDM(LatentDiffusion):
 
 
         # 新建文件夹，用来存放验证的图片
-        # version_num = len(os.listdir('save_dir/lightning_logs'))
         version_list = os.listdir('save_dir/lightning_logs')
-        version_list_int = [int(i[8:]) for i in version_list]
-        version_num = sorted(version_list_int)[-1] +1 
+        version_list_int = []
+        for item_name in version_list:
+            if item_name.startswith('version_'): # 只處理 'version_X' 格式的目錄
+                try:
+                    version_list_int.append(int(item_name[8:]))
+                except ValueError:
+                    # 忽略無法轉換為整數的項目
+                    print(f"Warning: Could not parse version number from '{item_name}' in 'save_dir/lightning_logs'. Skipping.")
+                    pass
+        
+        if not version_list_int: # 如果列表為空 (目錄為空或沒有有效版本)
+            version_num = 0  # 設定預設版本號為 0
+        else:
+            version_num = sorted(version_list_int)[-1] + 1
         
         self.val_img_output_rootpath = f'save_dir/img_output/version_{version_num}/'
 
@@ -805,8 +816,3 @@ class ControlLDM(LatentDiffusion):
 
 
         self.model.train()
-        
-
-
-
-
