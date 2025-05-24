@@ -122,3 +122,14 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Datasets
+datasets/
+toy_datasets/
+
+# Model checkpoints
+magc_ckpts/
+*.ckpt
+
+# Metrics and output
+metrics_*/
